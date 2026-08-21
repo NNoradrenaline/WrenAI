@@ -1,4 +1,4 @@
-# trigger: yaml parse error review v2
+# helper branch only
 name: Address PR 2690 YAML parse error review
 
 on:
@@ -7,23 +7,17 @@ on:
       - ci/pr-2690-root-key-review
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/context-upgrade-preserve-malformed-views
-          fetch-depth: 0
           persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Verify YAML parse error review fix already landed
+      - name: Verify review fix is present
         run: |
           python - <<'PY'
           from pathlib import Path
