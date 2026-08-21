@@ -1,5 +1,5 @@
-# trigger: duplicate-key review
-name: Address PR 2690 duplicate-key review
+# trigger: yaml parse error review
+name: Address PR 2690 YAML parse error review
 
 on:
   push:
@@ -23,25 +23,25 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Apply duplicate-key review fix
+      - name: Apply YAML parse error review fix
         run: |
           python - <<'PY'
           from pathlib import Path
 
           context_path = Path('core/wren/src/wren/context.py')
           text = context_path.read_text(encoding='utf-8')
-          old = '''    raw = yaml.safe_load(views_file.read_text(encoding="utf-8"))\n    problems: list[str] = []\n'''
-          new = '''    class _UniqueKeySafeLoader(yaml.SafeLoader):\n        """SafeLoader variant that rejects explicit duplicate mapping keys."""\n\n        def construct_mapping(self, node, deep=False):\n            """Reject duplicate keys before normal SafeLoader construction."""\n            seen = set()\n            for key_node, _ in node.value:\n                key = self.construct_object(key_node, deep=deep)\n                if key in seen:\n                    raise UpgradeError(\n                        f"Cannot upgrade: views.yml contains duplicate YAML key {key!r}"\n                    )\n                seen.add(key)\n            return super().construct_mapping(node, deep=deep)\n\n    raw = yaml.load(\n        views_file.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader\n    )\n    problems: list[str] = []\n'''
+          old = '''    raw = yaml.load(views_file.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)\n    problems: list[str] = []\n'''
+          new = '''    try:\n        raw = yaml.load(\n            views_file.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader\n        )\n    except (TypeError, yaml.YAMLError) as exc:\n        raise UpgradeError(f"Cannot upgrade: invalid views.yml: {exc}") from exc\n\n    problems: list[str] = []\n'''
           if text.count(old) != 1:
-              raise SystemExit(f'context duplicate-key anchor count: {text.count(old)}')
+              raise SystemExit(f'context YAML error anchor count: {text.count(old)}')
           context_path.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           tests_path = Path('core/wren/tests/unit/test_context.py')
           tests = tests_path.read_text(encoding='utf-8')
           anchor = '''\n\ndef test_plan_upgrade_v1_to_v2_rejects_nameless_view_without_data_loss(tmp_path):\n'''
-          regression = '''\n\n@pytest.mark.parametrize(\n    "views_yml",\n    [\n        "views:\\n  - name: first\\nviews:\\n  - name: second\\n",\n        "views:\\n  - name: first\\n    statement: SELECT 1\\n    statement: SELECT 2\\n",\n    ],\n)\ndef test_plan_upgrade_v1_to_v2_rejects_duplicate_yaml_keys_without_data_loss(\n    tmp_path, views_yml\n):\n    """Duplicate YAML keys must never be collapsed before migration."""\n    _make_v1_project(tmp_path)\n    views_file = tmp_path / "views.yml"\n    views_file.write_text(views_yml, encoding="utf-8")\n    source_contents = _snapshot_v1_sources(tmp_path)\n\n    from wren.context import UpgradeError as _UE  # noqa: PLC0415\n\n    with pytest.raises(_UE, match="duplicate YAML key"):\n        plan_upgrade(tmp_path, target_version=2)\n\n    _assert_v1_sources_unchanged(tmp_path, source_contents)\n\n\ndef test_apply_upgrade_v1_to_v2_rechecks_duplicate_yaml_keys_before_writing(tmp_path):\n    """A duplicate introduced after planning must still block all writes."""\n    _make_v1_project(tmp_path)\n    plan = plan_upgrade(tmp_path, target_version=2)\n    views_file = tmp_path / "views.yml"\n    views_file.write_text(\n        "views:\\n  - name: first\\nviews:\\n  - name: second\\n",\n        encoding="utf-8",\n    )\n    source_contents = _snapshot_v1_sources(tmp_path)\n\n    from wren.context import UpgradeError as _UE  # noqa: PLC0415\n\n    with pytest.raises(_UE, match="duplicate YAML key"):\n        apply_upgrade(tmp_path, plan)\n\n    _assert_v1_sources_unchanged(tmp_path, source_contents)\n'''
+          regression = '''\n\n@pytest.mark.parametrize(\n    "views_yml",\n    [\n        "views: [\\n",\n        "views:\\n  - ? [name]\\n    : value\\n",\n    ],\n)\ndef test_plan_upgrade_v1_to_v2_wraps_yaml_loader_errors_without_data_loss(\n    tmp_path, views_yml\n):\n    """Malformed YAML must fail as UpgradeError without changing source files."""\n    _make_v1_project(tmp_path)\n    views_file = tmp_path / "views.yml"\n    views_file.write_text(views_yml, encoding="utf-8")\n    source_contents = _snapshot_v1_sources(tmp_path)\n\n    from wren.context import UpgradeError as _UE  # noqa: PLC0415\n\n    with pytest.raises(_UE, match="invalid views.yml"):\n        plan_upgrade(tmp_path, target_version=2)\n\n    _assert_v1_sources_unchanged(tmp_path, source_contents)\n\n\ndef test_apply_upgrade_v1_to_v2_rechecks_yaml_loader_errors_before_writing(tmp_path):\n    """Malformed YAML introduced after planning must block all writes."""\n    _make_v1_project(tmp_path)\n    plan = plan_upgrade(tmp_path, target_version=2)\n    views_file = tmp_path / "views.yml"\n    views_file.write_text("views: [\\n", encoding="utf-8")\n    source_contents = _snapshot_v1_sources(tmp_path)\n\n    from wren.context import UpgradeError as _UE  # noqa: PLC0415\n\n    with pytest.raises(_UE, match="invalid views.yml"):\n        apply_upgrade(tmp_path, plan)\n\n    _assert_v1_sources_unchanged(tmp_path, source_contents)\n'''
           if tests.count(anchor) != 1:
-              raise SystemExit(f'test duplicate-key insertion anchor count: {tests.count(anchor)}')
+              raise SystemExit(f'test YAML error insertion anchor count: {tests.count(anchor)}')
           tests_path.write_text(tests.replace(anchor, regression + anchor, 1), encoding='utf-8')
           PY
 
@@ -58,30 +58,34 @@ jobs:
           from pathlib import Path
 
           module_path = Path('core/wren/src/wren/context.py')
-          spec = importlib.util.spec_from_file_location('wren_context_2690_duplicate_keys', module_path)
+          spec = importlib.util.spec_from_file_location('wren_context_2690_yaml_errors', module_path)
           ctx = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = ctx
           spec.loader.exec_module(ctx)
 
-          bad_payloads = (
-              'views:\n  - name: first\nviews:\n  - name: second\n',
-              'views:\n  - name: first\n    statement: SELECT 1\n    statement: SELECT 2\n',
-          )
-          for payload in bad_payloads:
+          for payload in ('views: [\n', 'views:\n  - ? [name]\n    : value\n'):
               with tempfile.TemporaryDirectory() as td:
                   root = Path(td)
                   (root / 'views.yml').write_text(payload, encoding='utf-8')
                   try:
                       ctx._reject_malformed_v1_views(root)
                   except ctx.UpgradeError as exc:
-                      assert 'duplicate YAML key' in str(exc)
+                      assert 'invalid views.yml' in str(exc)
                   else:
-                      raise AssertionError(f'accepted duplicate YAML key: {payload!r}')
+                      raise AssertionError(f'accepted malformed YAML: {payload!r}')
 
           with tempfile.TemporaryDirectory() as td:
               root = Path(td)
-              (root / 'views.yml').write_text('views:\n  - name: okay\n', encoding='utf-8')
-              ctx._reject_malformed_v1_views(root)
+              (root / 'views.yml').write_text(
+                  'views:\n  - name: first\nviews:\n  - name: second\n',
+                  encoding='utf-8',
+              )
+              try:
+                  ctx._reject_malformed_v1_views(root)
+              except ctx.UpgradeError as exc:
+                  assert 'duplicate YAML key' in str(exc)
+              else:
+                  raise AssertionError('duplicate-key behavior regressed')
           PY
 
       - name: Commit review fix
@@ -92,5 +96,5 @@ jobs:
           git config user.email "NNoradrenaline@users.noreply.github.com"
           git add core/wren/src/wren/context.py core/wren/tests/unit/test_context.py
           git diff --cached --check
-          git commit -m "fix(context): reject duplicate YAML keys before upgrade"
+          git commit -m "fix(context): wrap malformed views YAML as upgrade errors"
           git push "https://x-access-token:${GH_TOKEN}@github.com/NNoradrenaline/WrenAI.git" HEAD:fix/context-upgrade-preserve-malformed-views
